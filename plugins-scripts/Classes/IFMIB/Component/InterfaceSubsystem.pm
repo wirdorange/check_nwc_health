@@ -1,6 +1,8 @@
 package Classes::IFMIB::Component::InterfaceSubsystem;
 our @ISA = qw(Monitoring::GLPlugin::SNMP::Item);
 use strict;
+use List::Util;
+
 
 sub init {
   my ($self) = @_;
@@ -708,8 +710,9 @@ sub init {
     $self->init();
     if ($self->{ifOperStatus} eq "up") {
       foreach my $mode (qw(device::interfaces::usage
+          device::interfaces::broadcasts
           device::interfaces::errors device::interfaces::discards
-          device::interfaces::broadcasts)) {
+          )) {
         $Monitoring::GLPlugin::mode = $mode;
         $self->init();
       }
@@ -770,10 +773,25 @@ sub init {
         / $self->{delta_timestamp};
   } elsif ($self->mode =~ /device::interfaces::discards/) {
     $self->valdiff({name => $self->{ifDescr}}, qw(ifInDiscards ifOutDiscards));
+    # $self->valdiff({name => $self->{ifDescr}}, qw(ifInUcastPkts
+    #    ifInMulticastPkts ifInBroadcastPkts ifOutUcastPkts
+    #    ifOutMulticastPkts ifOutBroadcastPkts));
     $self->{inputDiscardRate} = $self->{delta_ifInDiscards} 
         / $self->{delta_timestamp};
     $self->{outputDiscardRate} = $self->{delta_ifOutDiscards} 
         / $self->{delta_timestamp};
+    if ( List::Util::reduce { our $a and our $b } map { exists $self->{$_} }
+       qw/delta_ifInUcastPkts delta_ifInMulticastPkts delta_ifInBroadcastPkts delta_ifOutUcastPkts delta_ifOutMulticastPkts delta_ifOutBroadcastPkts/ )
+    {    
+      $self->{inputDiscardPercent} = $self->{delta_ifInDiscards} ?
+        100 * $self->{delta_ifInDiscards} / ( $self->{delta_ifInDiscards} 
+        + $self->{delta_ifInUcastPkts} + $self->{delta_ifInMulticastPkts} +
+        $self->{delta_ifInBroadcastPkts}) : 0;
+      $self->{outputDiscardPercent} = $self->{delta_ifOutDiscards} ?
+        100 * $self->{delta_ifOutDiscards} / ( $self->{delta_ifOutDiscards} +
+        $self->{delta_ifOutUcastPkts} + $self->{delta_ifOutMulticastPkts} +
+        $self->{delta_ifOutBroadcastPkts}) : 0 ; 
+    }
   } elsif ($self->mode =~ /device::interfaces::broadcasts/) {
     foreach my $key (qw(ifInUcastPkts
         ifInMulticastPkts ifInBroadcastPkts ifOutUcastPkts
@@ -1049,6 +1067,40 @@ sub check {
         label => $self->{ifDescr}.'_discards_out',
         value => $self->{outputDiscardRate},
     );
+    #relative
+    $self->add_info(sprintf 'interface %s discards in:%.2f%% out:%.2f%% ',
+        $full_descr,
+        $self->{inputDiscardPercent} , $self->{outputDiscardPercent});
+    $self->set_thresholds(
+        metric => $self->{ifDescr}.'_discards_in_percent',
+        warning => .1,
+        critical => 1
+    );
+    $in = $self->check_thresholds(
+        metric => $self->{ifDescr}.'_discards_in_percent',
+        value => $self->{inputDiscardPercent}
+    );
+    $self->set_thresholds(
+        metric => $self->{ifDescr}.'_discards_out_percent',
+        warning => .1,
+        critical => 1
+    );
+    $out = $self->check_thresholds(
+        metric => $self->{ifDescr}.'_discards_out_percent',
+        value => $self->{outputDiscardPercent}
+    );
+    $level = ($in > $out) ? $in : ($out > $in) ? $out : $in;
+    $self->add_message($level);
+    $self->add_perfdata(
+        label => $self->{ifDescr}.'_discards_in_percent',
+        value => $self->{inputDiscardPercent},
+        uom => '%',
+    );
+    $self->add_perfdata(
+        label => $self->{ifDescr}.'_discards_out_percent',
+        value => $self->{outputDiscardPercent},
+        uom => '%',
+    );
   } elsif ($self->mode =~ /device::interfaces::broadcast/) {
     $self->add_info(sprintf 'interface %s broadcast in:%.2f%% out:%.2f%% ',
         $full_descr,
@@ -1082,6 +1134,38 @@ sub check {
         label => $self->{ifDescr}.'_broadcast_out',
         value => $self->{broadcastOutPercent},
         uom => '%',
+    );
+    #PPS
+    $self->add_info(sprintf 'interface %s broadcast in:%03pps out:%03fpps ',
+        $full_descr,
+        $self->{delta_ifInBroadcastPkts} , $self->{delta_ifOutBroadcastPkts});
+    $self->set_thresholds(
+        metric => $self->{ifDescr}.'_broadcast_in_pps',
+        warning => 1000,
+        critical => 10000
+    );
+    $in = $self->check_thresholds(
+        metric => $self->{ifDescr}.'_broadcast_in_pps',
+        value => $self->{delta_ifInBroadcastPkts}
+    );
+    $self->set_thresholds(
+        metric => $self->{ifDescr}.'_broadcast_out_pps',
+        warning => 1000,
+        critical => 10000
+    );
+    $out = $self->check_thresholds(
+        metric => $self->{ifDescr}.'_broadcast_out_pps',
+        value => $self->{delta_ifOutBroadcastPkts}
+    );
+    $level = ($in > $out) ? $in : ($out > $in) ? $out : $in;
+    $self->add_message($level);
+    $self->add_perfdata(
+        label => $self->{ifDescr}.'_broadcast_in_pps',
+        value => $self->{delta_ifInBroadcastPkts},
+    );
+    $self->add_perfdata(
+        label => $self->{ifDescr}.'_broadcast_out_pps',
+        value => $self->{delta_ifOutBroadcastPkts},
     );
   } elsif ($self->mode =~ /device::interfaces::operstatus/) {
     #rfc2863
